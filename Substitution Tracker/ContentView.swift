@@ -1,4 +1,5 @@
 import SwiftUI
+import MessageUI
 
 struct Player: Identifiable, Equatable {
     let id = UUID()
@@ -17,19 +18,20 @@ struct ContentView: View {
     ]
 
     @State private var selectedPlayers: [UUID] = []
+    @State private var swapLog: [String] = []
+    @State private var showReport = false
 
     // Timer states
     @State private var timer: Timer? = nil
     @State private var secondsElapsed: Int = 0
     @State private var isRunning = false
     @State private var manualInput = ""
-    
-    @State private var record = []
-    let positions = ["GK", "CB", "LB", "RB", "CM", "CAM", "CDM", "LW", "RW", "ST"]
+
+    let positions = ["None", "GK", "CB", "LB", "RB", "CM", "CAM", "CDM", "LW", "RW", "ST"]
 
     var body: some View {
         VStack {
-            // Timer UI
+            // Timer UI and Report Button
             HStack {
                 Text("Time: \(formatTime(secondsElapsed))")
                     .font(.title2)
@@ -49,6 +51,9 @@ struct ContentView: View {
                 })
                 .frame(width: 80)
                 .textFieldStyle(RoundedBorderTextFieldStyle())
+                Button("Report") {
+                    showReport = true
+                }
             }
             .padding()
 
@@ -80,11 +85,22 @@ struct ContentView: View {
                                             }
                                         },
                                         onTap: {
-                                            toggleSelection(for: player)
+                            toggleSelection(for: player, boundary:geo.size.height / 2)
                                         },
                                         onPositionChange: { newPos in
                                             if let index = allPlayers.firstIndex(of: player) {
+                                                let oldPos = allPlayers[index].position
                                                 allPlayers[index].position = newPos
+                                                if player.location.y < geo.size.height / 2 {
+                                                    if oldPos == "None" || oldPos == nil {
+                                                        let log = "\(allPlayers[index].name) is moved to \(newPos) at \(formatTime(secondsElapsed))"
+                                                        swapLog.append(log)
+                                                    }
+                                                    else if oldPos != newPos && newPos != "None" {
+                                                        let log = "\(allPlayers[index].name) is moved from \(oldPos!) to \(newPos) at \(formatTime(secondsElapsed))"
+                                                        swapLog.append(log)
+                                                    }
+                                                }
                                             }
                                         },
                                         positions: positions,
@@ -95,31 +111,58 @@ struct ContentView: View {
                 }
             }
         }
+        .fullScreenCover(isPresented: $showReport) {
+            ReportView(log: $swapLog, dismissAction: { showReport = false })
+        }
     }
 
-    private func toggleSelection(for player: Player) {
+    private func toggleSelection(for player: Player, boundary: CGFloat) {
         if selectedPlayers.contains(player.id) {
             selectedPlayers.removeAll { $0 == player.id }
         } else {
             selectedPlayers.append(player.id)
             if selectedPlayers.count == 2 {
-                swapPlayers()
+                swapPlayers(boundary:boundary)
             }
         }
     }
 
-    private func swapPlayers() {
+    private func swapPlayers(boundary: CGFloat) {
         if selectedPlayers.count == 2,
            let firstIndex = allPlayers.firstIndex(where: { $0.id == selectedPlayers[0] }),
            let secondIndex = allPlayers.firstIndex(where: { $0.id == selectedPlayers[1] }) {
-            let tempPosition = allPlayers[firstIndex].position
-            let tempLocation = allPlayers[firstIndex].location
+            let p1 = allPlayers[firstIndex]
+            let p2 = allPlayers[secondIndex]
+            let p1OnField = p1.location.y < boundary
+            let p2OnField = p2.location.y < boundary
 
-            allPlayers[firstIndex].position = allPlayers[secondIndex].position
-            allPlayers[firstIndex].location = allPlayers[secondIndex].location
+            let tempPosition = p1.position
+            let tempLocation = p1.location
+
+            allPlayers[firstIndex].position = p2.position
+            allPlayers[firstIndex].location = p2.location
 
             allPlayers[secondIndex].position = tempPosition
             allPlayers[secondIndex].location = tempLocation
+
+            if p1OnField && !p2OnField {
+                if let pos = p1.position {
+                    let log = "\(p2.name) is subbed in for \(p1.name) in position \(pos) at \(formatTime(secondsElapsed))"
+                    swapLog.append(log)
+                }
+            } else if !p1OnField && p2OnField {
+                if let pos = p2.position {
+                    let log = "\(p1.name) is subbed in for \(p2.name) in position \(pos) at \(formatTime(secondsElapsed))"
+                    swapLog.append(log)
+                }
+            } else if p1OnField && p2OnField {
+                if let p1Pos = p1.position, let p2Pos = p2.position {
+                    let log1 = "\(p1.name) is moved from \(p1Pos) to \(p2Pos) at \(formatTime(secondsElapsed))"
+                    let log2 = "\(p2.name) is moved from \(p2Pos) to \(p1Pos) at \(formatTime(secondsElapsed))"
+                    swapLog.append(log1)
+                    swapLog.append(log2)
+                }
+            }
         }
         selectedPlayers.removeAll()
     }
@@ -157,8 +200,87 @@ struct ContentView: View {
         let seconds = seconds % 60
         return String(format: "%02d:%02d", minutes, seconds)
     }
-    
-    
+}
+
+struct ReportView: View {
+    @Binding var log: [String]
+    var dismissAction: () -> Void
+    @State private var showMailView = false
+    @State private var showMailError = false
+
+    var body: some View {
+        NavigationView {
+            VStack(alignment: .leading) {
+                Text("Match Report")
+                    .font(.title)
+                    .padding()
+                TextEditor(text: Binding(
+                    get: { log.joined(separator: "\n") },
+                    set: { newText in
+                        log = newText.components(separatedBy: "\n")
+                    })
+                )
+                .padding()
+                .border(Color.gray)
+
+                HStack {
+                    Button("Back") {
+                        dismissAction()
+                    }
+                    Spacer()
+                    Button("Send") {
+                        if MFMailComposeViewController.canSendMail() {
+                            showMailView = true
+                        } else {
+                            showMailError = true
+                        }
+                    }
+                }
+                .padding()
+                .sheet(isPresented: $showMailView) {
+                    MailView(subject: "Match Report", body: log.joined(separator: "\n"))
+                }
+                .alert("Mail services are not available. Please set up a mail account.", isPresented: $showMailError) {
+                    Button("OK", role: .cancel) {}
+                }
+            }
+            .padding()
+        }
+    }
+}
+
+struct MailView: UIViewControllerRepresentable {
+    @Environment(\.presentationMode) var presentation
+    var subject: String
+    var body: String
+
+    class Coordinator: NSObject, MFMailComposeViewControllerDelegate {
+        var parent: MailView
+
+        init(parent: MailView) {
+            self.parent = parent
+        }
+
+        func mailComposeController(_ controller: MFMailComposeViewController, didFinishWith result: MFMailComposeResult, error: Error?) {
+            controller.dismiss(animated: true) {
+                self.parent.presentation.wrappedValue.dismiss()
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIViewController(context: Context) -> MFMailComposeViewController {
+        let vc = MFMailComposeViewController()
+        vc.setSubject(subject)
+        vc.setMessageBody(body, isHTML: false)
+        vc.mailComposeDelegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: MFMailComposeViewController, context: Context) {}
 }
 
 struct DraggablePlayer: View {
@@ -188,11 +310,12 @@ struct DraggablePlayer: View {
                     }
                 }
             } label: {
-                Text(player.position ?? "Set Position")
+                Text(player.position ?? "None")
                     .font(.caption)
                     .padding(4)
                     .background(Color.white)
                     .cornerRadius(6)
+                    .frame(minWidth: 60)
             }
         }
         .offset(dragOffset)
@@ -213,4 +336,3 @@ struct ContentView_Previews: PreviewProvider {
         ContentView()
     }
 }
-
